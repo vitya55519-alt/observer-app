@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Наблюдение</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<div id="login" class="login">
+  <h1>Наблюдение</h1>
+  <input id="pass" type="password" placeholder="пароль">
+  <button id="go">Войти</button>
+  <p id="err"></p>
+</div>
+<div id="app" hidden>
+  <header>
+    <span class="brand">НАБЛЮДЕНИЕ</span>
+    <select id="dev"></select>
+    <span id="status" class="st"></span>
+    <button id="out">Выйти</button>
+  </header>
+  <nav id="nav"></nav>
+  <main id="main"></main>
+</div>
+<script src="app.js"></script>
+</body></html>
