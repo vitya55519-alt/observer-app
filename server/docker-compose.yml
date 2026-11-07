@@ -1,0 +1,49 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    env_file: .env
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [api]
+
+  api:
+    build: ./app
+    restart: always
+    env_file: .env
+    volumes:
+      - /mnt/vol/media:/data/media
+      - ./dist:/srv/dist:ro
+      - ./panel:/srv/panel:ro
+    depends_on: [db]
+
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: obs
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: obs
+    volumes:
+      - ./app/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - pgdata:/var/lib/postgresql/data
+
+  cron:
+    image: alpine:3.20
+    restart: always
+    command: >
+      sh -c "apk add --no-cache postgresql-client curl >/dev/null &&
+             echo '17 4 * * * sh /scripts/retention.sh' > /etc/crontabs/root &&
+             echo '40 3 * * * sh /scripts/backup.sh' >> /etc/crontabs/root &&
+             crond -f -l 2"
+    volumes:
+      - ./scripts:/scripts:ro
+      - /mnt/vol/media:/data/media
+      - /mnt/vol/backup:/backup
+    env_file: .env
+
+volumes:
+  caddy_data:
+  pgdata:

